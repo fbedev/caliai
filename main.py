@@ -8,7 +8,7 @@ Enhancements:
   • Auto-mode detection: If MODE=None, classifies skill based on pose.
   • Debounced gates: Average over frames for stability.
   • More feedback: e.g., "Get ready" messages.
-  • Fixed eval issue for mode function names (no spaces in function names).
+  • Fixed eval issues: Replaced eval with direct function calls and argument mapping.
 
 Other notes remain the same.
 """
@@ -65,13 +65,38 @@ TXT = {
     "auto_mode": "Auto-detected: %s",
 }
 
-# --- Mode to function name mapping ---
+# --- Mode to function and argument mapping ---
 MODE_TO_FUNC = {
-    "Pull-up": "pullup",
-    "Front Lever": "frontlever",
-    "Planche": "planche",
-    "Handstand": "handstand",
-    "L-sit": "lsit"
+    "Pull-up": {
+        "name": "pullup",
+        "ready_func": lambda elbow_avg, hip_avg, body_avg: gate_ready_pullup(elbow_avg, hip_avg, body_avg),
+        "gate_func": lambda sL, sR, wL, wR, H: gate_pullup(sL, sR, wL, wR, H),
+        "judge_func": lambda elbow_hist, hip_hist: judge_pullup(elbow_hist, hip_hist)
+    },
+    "Front Lever": {
+        "name": "frontlever",
+        "ready_func": lambda body_avg, elbow_avg: gate_ready_frontlever(body_avg, elbow_avg),
+        "gate_func": lambda body: gate_frontlever(body),
+        "judge_func": lambda body_hist, elbow_hist: judge_frontlever(body_hist, elbow_hist)
+    },
+    "Planche": {
+        "name": "planche",
+        "ready_func": lambda lean_avg: gate_ready_planche(lean_avg),
+        "gate_func": lambda sL, wL, hC: gate_planche(sL, wL, hC),
+        "judge_func": lambda sL, wL, hC: judge_planche(sL, wL, hC)
+    },
+    "Handstand": {
+        "name": "handstand",
+        "ready_func": lambda body_avg: gate_ready_handstand(body_avg),
+        "gate_func": lambda body: gate_handstand(body),
+        "judge_func": lambda body: judge_handstand(body)
+    },
+    "L-sit": {
+        "name": "lsit",
+        "ready_func": lambda hip_avg: gate_ready_lsit(hip_avg),
+        "gate_func": lambda hL: gate_lsit(hL),
+        "judge_func": lambda hL: TXT["clean_rep"] if abs(90 - hL) <= 12 else "Lift legs; depress shoulders"
+    }
 }
 
 # --- Simple text draw (OpenCV) ---
@@ -368,50 +393,76 @@ def main():
                         current_mode = detected
                         verdict = TXT["auto_mode"] % current_mode
 
-                if current_mode:
-                    # Get function name from mapping
-                    func_name = MODE_TO_FUNC.get(current_mode, current_mode.lower().replace(' ', ''))
-                    
+                if current_mode and current_mode in MODE_TO_FUNC:
+                    # Get mode-specific functions
+                    mode_info = MODE_TO_FUNC[current_mode]
+                    ready_func = mode_info["ready_func"]
+                    gate_func = mode_info["gate_func"]
+                    judge_func = mode_info["judge_func"]
+
+                    # Argument mapping
+                    args_map = {
+                        "elbow_avg": elbow_avg,
+                        "hip_avg": hip_avg,
+                        "body_avg": body_avg,
+                        "lean_avg": lean_avg,
+                        "sL": sL,
+                        "sR": sR,
+                        "wL": wL,
+                        "wR": wR,
+                        "H": H,
+                        "body": body,
+                        "hL": hL,
+                        "hC": hC
+                    }
+
                     # State transitions
                     if current_state == "IDLE":
-                        ready_func = f"gate_ready_{func_name}"
-                        if current_mode == "Planche":
-                            if eval(f"{ready_func}(lean_avg)"):
+                        if current_mode == "Pull-up":
+                            if ready_func(elbow_avg, hip_avg, body_avg):
+                                current_state = "READY"
+                        elif current_mode == "Front Lever":
+                            if ready_func(body_avg, elbow_avg):
+                                current_state = "READY"
+                        elif current_mode == "Planche":
+                            if ready_func(lean_avg):
+                                current_state = "READY"
+                        elif current_mode == "Handstand":
+                            if ready_func(body_avg):
                                 current_state = "READY"
                         elif current_mode == "L-sit":
-                            if eval(f"{ready_func}(hip_avg)"):
-                                current_state = "READY"
-                        else:
-                            if eval(f"{ready_func}(elbow_avg, hip_avg, body_avg)"):
+                            if ready_func(hip_avg):
                                 current_state = "READY"
                     elif current_state == "READY":
-                        gate_func = f"gate_{func_name}"
                         performing = False
                         if current_mode == "Pull-up":
-                            performing = eval(f"{gate_func}(sL, sR, wL, wR, H)")
+                            performing = gate_func(sL, sR, wL, wR, H)
                         elif current_mode in ["Front Lever", "Handstand"]:
-                            performing = eval(f"{gate_func}(body)")
+                            performing = gate_func(body)
                         elif current_mode == "Planche":
-                            performing = eval(f"{gate_func}(sL, wL, hC)")
+                            performing = gate_func(sL, wL, hC)
                         elif current_mode == "L-sit":
-                            performing = eval(f"{gate_func}(hL)")
+                            performing = gate_func(hL)
                         if performing:
                             current_state = "PERFORMING"
                         else:
-                            ready_func = f"gate_ready_{func_name}"
                             still_ready = False
-                            if current_mode == "Planche":
-                                still_ready = eval(f"{ready_func}(lean_avg)")
+                            if current_mode == "Pull-up":
+                                still_ready = ready_func(elbow_avg, hip_avg, body_avg)
+                            elif current_mode == "Front Lever":
+                                still_ready = ready_func(body_avg, elbow_avg)
+                            elif current_mode == "Planche":
+                                still_ready = ready_func(lean_avg)
+                            elif current_mode == "Handstand":
+                                still_ready = ready_func(body_avg)
                             elif current_mode == "L-sit":
-                                still_ready = eval(f"{ready_func}(hip_avg)")
-                            else:
-                                still_ready = eval(f"{ready_func}(elbow_avg, hip_avg, body_avg)")
+                                still_ready = ready_func(hip_avg)
                             if not still_ready:
                                 current_state = "IDLE"
                     elif current_state == "PERFORMING":
                         active = True
                         if current_mode == "Pull-up":
-                            verdict = judge_pullup(elbow_hist, hip_hist)
+                            verdict = judge_func(elbow_hist, hip_hist)
                             if elbow_avg < 80 and state == 'top':
                                 state = 'bottom'
                             if elbow_avg > 150 and state == 'bottom':
@@ -419,27 +470,25 @@ def main():
                                 reps += 1
                                 current_state = "REST"
                         elif current_mode == "Front Lever":
-                            verdict = judge_frontlever(body_hist, elbow_hist)
+                            verdict = judge_func(body_hist, elbow_hist)
                         elif current_mode == "Planche":
-                            verdict = judge_planche(sL, wL, hC)
+                            verdict = judge_func(sL, wL, hC)
                         elif current_mode == "Handstand":
-                            verdict = judge_handstand(body)
+                            verdict = judge_func(body)
                         elif current_mode == "L-sit":
-                            dev = abs(90 - hL)
-                            verdict = TXT["clean_rep"] if dev <= 12 else "Lift legs; depress shoulders"
+                            verdict = judge_func(hL)
                         if verdict == TXT["clean_rep"]:
                             current_state = "REST"
                     elif current_state == "REST":
-                        gate_func = f"gate_{func_name}"
                         is_performing = False
                         if current_mode == "Pull-up":
-                            is_performing = eval(f"{gate_func}(sL, sR, wL, wR, H)")
+                            is_performing = gate_func(sL, sR, wL, wR, H)
                         elif current_mode in ["Front Lever", "Handstand"]:
-                            is_performing = eval(f"{gate_func}(body)")
+                            is_performing = gate_func(body)
                         elif current_mode == "Planche":
-                            is_performing = eval(f"{gate_func}(sL, wL, hC)")
+                            is_performing = gate_func(sL, wL, hC)
                         elif current_mode == "L-sit":
-                            is_performing = eval(f"{gate_func}(hL)")
+                            is_performing = gate_func(hL)
                         if not is_performing:
                             current_state = "IDLE"
 
